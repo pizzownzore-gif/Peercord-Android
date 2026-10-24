@@ -80,6 +80,7 @@ main>header b{flex:1}
   <p id="hostnote" hidden></p>
   <div class="row"><input id="inv" placeholder="Paste invite" autocomplete="off"><button id="scan" title="Scan QR">Scan</button></div>
   <button id="join">Join with invite</button>
+  <div id="saved" style="display:grid;gap:8px"></div>
   <button class="g" id="wipe" hidden>Delete my server and its history</button>
  </div>
 </div>
@@ -121,7 +122,7 @@ async function dec(s,K=KEY){const u=unb64(s);return JSON.parse(new TextDecoder()
 
 /* ---------- state ---------- */
 const S={name:ls.get('pc_name')||'',peer:null,me:'',host:false,hostId:'',keyStr:'',hostConn:null,leaving:false,synced:false,fails:0,
- channels:[{id:'general',name:'general'}],msgs:{general:[]},members:[],voice:[],active:'general',unread:{},adding:false,stick:true,bans:[],kp:null,pk:null,dkeys:new Map(),dms:{},dmn:{},deaf:false,preMute:false,admin:false,adminKey:'',ws:'',began:false,
+ channels:[{id:'general',name:'general'}],msgs:{general:[]},members:[],voice:[],active:'general',unread:{},adding:false,stick:true,bans:[],kp:null,pk:null,dkeys:new Map(),dms:{},dmn:{},deaf:false,preMute:false,admin:false,adminKey:'',ws:'',began:false,lastTry:0,
  inVoice:false,muted:false,stream:null,calls:new Map(),audios:new Map()};
 
 function toast(t){const e=$('#toast');e.textContent=t;e.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>e.hidden=true,3500)}
@@ -151,7 +152,7 @@ async function startHost(){
   S.peer.on('connection',c=>{
    c.on('data',async r=>{try{await handle(await dec(r),c.peer,c)}catch{if(!S.members.some(m=>m.c===c))c.close()}});
    c.on('close',()=>drop(c.peer,c));c.on('error',()=>drop(c.peer,c))});
-  save();showApp();console.log('PEERCORD_INVITE pc:'+S.hostId+':'+S.keyStr);console.log('PEERCORD_ADMIN pc:'+S.hostId+':'+S.keyStr+':'+S.adminKey)})}
+  save();ls.set('pc_auto','host');showApp();console.log('PEERCORD_INVITE pc:'+S.hostId+':'+S.keyStr);console.log('PEERCORD_ADMIN pc:'+S.hostId+':'+S.keyStr+':'+S.adminKey)})}
 
 async function handle(m,id,c){
  const now=Date.now();let mem=S.members.find(x=>x.id===id);
@@ -205,6 +206,22 @@ async function joinInvite(){
  await initKP();startGuest(ls.get('pc_id')||newId());toast('Connecting…')}
 function newId(){const i='pg'+b64(crypto.getRandomValues(new Uint8Array(9))).replace(/[^a-z0-9]/gi,'x');ls.set('pc_id',i);return i}
 function begin(){if(S.began)return;S.began=true;connect()}
+/* ---- stay connected in the background (Android foreground service) and remember servers ---- */
+const KA=()=>window.Capacitor&&window.Capacitor.Plugins&&window.Capacitor.Plugins.KeepAlive;
+function keep(on){const k=KA();if(!k)return;try{on?k.start({voice:S.inVoice}):k.stop()}catch{}}
+function wake(){if(S.leaving||!S.peer)return;try{if(S.peer.disconnected)S.peer.reconnect()}catch{}
+ if(!S.host&&S.synced&&!(S.hostConn&&S.hostConn.open)&&Date.now()-S.lastTry>4000)connect()}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)wake()});addEventListener('online',wake);
+function SV(){try{return JSON.parse(ls.get('pc_servers'))||[]}catch{return[]}}
+function saveServer(){if(S.host)return;
+ const inv=S.ws?`pcw:${S.keyStr}:${S.adminKey||'-'}:${S.ws}`:`pc:${S.hostId}:${S.keyStr}`+(S.adminKey?':'+S.adminKey:'');
+ const kof=i=>{const q=i.split(':');return q[0]==='pcw'?q[1]:q[2]},hm=S.members.find(x=>x.id===S.hostId||x.id==='server');
+ const a=SV().filter(x=>kof(x.inv)!==S.keyStr);a.unshift({inv,label:(hm?hm.name:'Server')+(S.ws?'':"'s server")});
+ ls.set('pc_servers',JSON.stringify(a.slice(0,12)));ls.set('pc_auto',inv)}
+function renderSaved(){const sv=SV();
+ rc($('#saved'),sv.length>0&&h('p',{},'Saved servers'),...sv.map(x=>h('div',{class:'row'},
+  h('button',{style:'flex:1;text-align:left',onclick:()=>{$('#inv').value=x.inv;joinInvite()}},x.label),
+  h('button',{class:'g',title:'Forget',onclick:()=>{ls.set('pc_servers',JSON.stringify(SV().filter(y=>y.inv!==x.inv)));renderSaved()}},'✕'))))}
 function tok(){let t=ls.get('pc_tok');if(!t){t=b64(crypto.getRandomValues(new Uint8Array(16)));ls.set('pc_tok',t)}return t}
 function startGuest(id){S.peer=mkPeer(id,()=>{if(!S.me)S.me=S.peer.id;begin()},()=>startGuest(newId()));
  if(S.ws)setTimeout(()=>{if(!S.began&&!S.leaving){S.me=newId();begin()}},7000)}
@@ -213,7 +230,7 @@ function wsConn(url){const w=new WebSocket(url),cb={},c={open:false,on(e,f){cb[e
  w.onopen=()=>{c.open=true;cb.open&&cb.open()};w.onmessage=e=>cb.data&&cb.data(e.data);w.onclose=()=>{c.open=false;cb.close&&cb.close()};w.onerror=()=>{};return c}
 function connect(){
  if(S.leaving)return;
- const c=S.ws?wsConn(S.ws):S.peer.connect(S.hostId,{reliable:true});S.hostConn=c;let open=false;
+ S.lastTry=Date.now();const c=S.ws?wsConn(S.ws):S.peer.connect(S.hostId,{reliable:true});S.hostConn=c;let open=false;
  const t=setTimeout(()=>{if(!open){try{c.close()}catch{}retry()}},12000);
  c.on('open',async()=>{open=true;clearTimeout(t);c.send(await enc({t:'join',name:S.name,pk:S.pk,admin:S.adminKey,id:S.me,tok:tok()}))});
  c.on('data',async r=>{try{apply(await dec(r))}catch{}});
@@ -227,7 +244,7 @@ async function send(o){
  if(S.host)return handle(o,S.me,null);
  if(S.hostConn&&S.hostConn.open)S.hostConn.send(await enc(o))}
 setInterval(()=>{
- if(S.host){const t=Date.now()-35000;S.members.filter(m=>!m.host&&m.last<t).forEach(m=>drop(m.id,m.c))}
+ if(S.host){const t=Date.now()-120000;S.members.filter(m=>!m.host&&m.last<t).forEach(m=>drop(m.id,m.c))}
  else if(S.synced)send({t:'ping'})},10000);
 
 /* shared reducer: runs on the host for its own broadcasts and on guests for incoming ones */
@@ -237,7 +254,7 @@ function apply(m){
  if(m.t==='members'||m.t==='sync')S.dkeys.clear();
  const g=!S.host;
  if(m.t==='sync'&&g){Object.assign(S,{channels:m.channels,msgs:m.msgs,members:m.members,voice:m.voice,admin:!!m.admin,bans:m.bans||[]});
-  if(!S.synced){S.synced=true;S.fails=0;showApp()}}
+  if(!S.synced){S.synced=true;S.fails=0;showApp();saveServer()}}
  else if(m.t==='msg'){if(g)(S.msgs[m.ch]=S.msgs[m.ch]||[]).push(m.msg);
   if(g&&S.msgs[m.ch].length>200)S.msgs[m.ch].shift();
   if(m.ch!==S.active&&!m.msg.sys&&m.msg.from!==S.me)S.unread[m.ch]=1}
@@ -252,11 +269,11 @@ function apply(m){
 async function joinVoice(){
  try{S.stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}})}
  catch(e){return toast('Microphone unavailable: '+e.message)}
- S.inVoice=true;S.muted=false;S.deaf=false;send({t:'vjoin'});render()}
+ S.inVoice=true;S.muted=false;S.deaf=false;keep(true);send({t:'vjoin'});render()}
 function leaveVoice(){
  S.inVoice=false;S.deaf=false;if(S.stream)S.stream.getTracks().forEach(t=>t.stop());S.stream=null;
  [...S.calls.values()].forEach(c=>c.close());S.calls.clear();
- S.audios.forEach(a=>a.remove());S.audios.clear();send({t:'vleave'});render()}
+ S.audios.forEach(a=>a.remove());S.audios.clear();send({t:'vleave'});keep(true);render()}
 function onCall(call){if(!S.stream)return call.close();call.answer(S.stream);track(call)}
 function callPeer(id){if(!S.stream||id===S.me||S.calls.has(id))return;track(S.peer.call(id,S.stream))}
 function track(call){
@@ -326,7 +343,7 @@ function render(){
    h('small',{},new Date(m.ts).toLocaleString([],{hour:'2-digit',minute:'2-digit',month:'short',day:'numeric'})),h('div',{class:'tx'},m.text),okImg(m.img)&&h('img',{class:'pic',src:m.img,alt:'image',onclick:()=>zoom(m.img)}),m.hi&&!m.img&&h('div',{class:'sys'},'(image no longer stored)')))));
  if(near||S.stick)box.scrollTop=box.scrollHeight;S.stick=false}
 
-function showApp(){$('#landing').hidden=true;$('#app').hidden=false;S.active=S.channels[0].id;S.stick=true;render()}
+function showApp(){keep(true);$('#landing').hidden=true;$('#app').hidden=false;S.active=S.channels[0].id;S.stick=true;render()}
 function modal(...kids){const m=h('div',{class:'modal',onclick:e=>{if(e.target===m)m.remove()}},h('div',{class:'card'},...kids));document.body.append(m);return m}
 function showInvite(){
  const inv=S.ws?`pcw:${S.keyStr}:-:${S.ws}`:`pc:${S.hostId}:${S.keyStr}`,cv=h('canvas',{style:'margin:auto;border-radius:8px;background:#fff'});
@@ -345,7 +362,7 @@ function scanQR(){
  q.start({facingMode:'environment'},{fps:10,qrbox:220},t=>{$('#inv').value=t;stop();joinInvite()},()=>{}).catch(e=>{toast('Camera unavailable: '+e);m.remove()})}
 
 function leave(){
- S.leaving=true;if(S.inVoice)leaveVoice();
+ S.leaving=true;ls.del('pc_auto');if(S.inVoice)leaveVoice();keep(false);
  try{if(S.hostConn)S.hostConn.close()}catch{}try{if(S.peer)S.peer.destroy()}catch{}
  Object.assign(S,{peer:null,hostConn:null,host:false,synced:false,members:[],voice:[],channels:[{id:'general',name:'general'}],msgs:{general:[]},unread:{},active:'general',bans:[],dms:{},dmn:{},dkeys:new Map(),deaf:false,kp:null,pk:null,admin:false,adminKey:'',ws:'',began:false,me:''});
  KEY=null;$('#app').hidden=true;$('#landing').hidden=false;landing()}
@@ -353,7 +370,7 @@ function landing(){
  $('#name').value=S.name;const has=!!ls.get('pc_host');
  $('#host').textContent=has?'Resume my server':'Host a server';
  $('#hostnote').hidden=!has;$('#hostnote').textContent='Your server keeps the same invite and its history on this device. It is only online while the app is open.';
- $('#wipe').hidden=!has}
+ $('#wipe').hidden=!has;renderSaved()}
 
 $('#host').onclick=startHost;$('#join').onclick=joinInvite;$('#scan').onclick=scanQR;
 $('#wipe').onclick=()=>{if($('#wipe').dataset.sure){ls.del('pc_host');delete $('#wipe').dataset.sure;landing();toast('Server deleted.')}
@@ -367,7 +384,8 @@ $('#snd').onclick=submit;$('#att').onclick=()=>pickImg(u=>post('',u));$('#inp').
 addEventListener('beforeunload',()=>{try{if(S.hostConn)S.hostConn.close()}catch{}});
 landing();
 /* Dedicated-server mode: Peercord.html?server=Name starts hosting immediately (used by server/server.js) */
-{const q=new URLSearchParams(location.search);if(q.has('server')){$('#name').value=q.get('server')||'Server';startHost()}}
+{const q=new URLSearchParams(location.search);if(q.has('server')){$('#name').value=q.get('server')||'Server';startHost()}
+ else{const a=ls.get('pc_auto');if(a&&S.name){if(a==='host')startHost();else{$('#inv').value=a;joinInvite()}}}}
 </script>
 </body>
 </html>
