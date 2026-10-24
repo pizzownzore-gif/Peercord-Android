@@ -25,9 +25,17 @@ jobs:
           sed -i 's#https://cdnjs.cloudflare.com/ajax/libs/[^/]*/[^/]*/#libs/#g' www/index.html
           grep -c 'libs/' www/index.html
       - run: npx cap add android
-      - name: Allow microphone and camera
+      - name: Permissions and background connection service
         run: |
-          sed -i 's#</manifest>#<uses-permission android:name="android.permission.RECORD_AUDIO"/><uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/><uses-permission android:name="android.permission.CAMERA"/></manifest>#' android/app/src/main/AndroidManifest.xml
+          M=android/app/src/main/AndroidManifest.xml
+          P=""
+          for x in RECORD_AUDIO MODIFY_AUDIO_SETTINGS CAMERA FOREGROUND_SERVICE FOREGROUND_SERVICE_DATA_SYNC FOREGROUND_SERVICE_MICROPHONE POST_NOTIFICATIONS WAKE_LOCK; do
+            P="$P<uses-permission android:name=\"android.permission.$x\"/>"
+          done
+          sed -i "s#</manifest>#$P</manifest>#" $M
+          sed -i 's#</application>#<service android:name=".KeepAliveService" android:exported="false" android:foregroundServiceType="dataSync|microphone"/></application>#' $M
+          cp native/*.java android/app/src/main/java/com/peercord/app/
+          grep -c KeepAlive $M
       - run: npx capacitor-assets generate --android
       - run: npx cap sync android
       - run: chmod +x android/gradlew && cd android && ./gradlew assembleDebug
