@@ -1,0 +1,7 @@
+{
+  "appId": "com.peercord.app",
+  "appName": "Peercord",
+  "webDir": "www",
+  "server": { "androidScheme": "http", "cleartext": true },
+  "android": { "allowMixedContent": true }
+}
